@@ -3,6 +3,9 @@
 __pycache__/
 *.pyc
 
+# Node (docs generator dependencies)
+node_modules/
+
 # Redundant zip archives (contents extracted to static/ and frontend/)
 *.zip
 
