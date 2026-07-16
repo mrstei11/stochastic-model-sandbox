@@ -71,10 +71,10 @@ SHRINK_STEPS = [1, 0.85, 0.70, 0.55, 0.40, 0.25, 0.10, 0.0]
 # factors) so cross-sector annual EL spans ~6 bps (stabilized housing/net
 # lease) to ~70 bps (full-service hotels); see calibrate_credit.py for the
 # sweep used to pick these.
-EDF_A0 = -6.50   # intercept (baseline: DSCR=1.5, LTV=0.60)
-EDF_A1 =  1.50   # distress coefficient: max(0, 1.5 - DSCR)
+EDF_A0 = -6.00   # intercept (baseline: DSCR=1.5, LTV=0.60)
+EDF_A1 =  2.00   # distress coefficient: max(0, 1.5 - DSCR)
 EDF_A2 = -1.31   # safety coefficient:   max(0, DSCR - 1.5)
-EDF_A3 =  1.00   # LTV pressure:         (LTV_t - 0.60)
+EDF_A3 =  1.50   # LTV pressure:         (LTV_t - 0.60)
 
 # CMM Structural LGD carry costs (Table 15 Liquidation Expense Worksheet)
 LGD_ONGOING_PER_YR = 0.057  # 5.7%/yr: servicing 1.5% + legal 1.0% + maint 2.0% + tax/ins 1.2%
@@ -362,7 +362,7 @@ CREDIT_PARAMS = dict(
     a0=EDF_A0, a1=EDF_A1, a2=EDF_A2, a3=EDF_A3,
     lgd_ongoing=LGD_ONGOING_PER_YR, lgd_onetime=LGD_ONETIME,
     edf_floor=0.004, lgd_floor=0.15,
-    mat_ltv_lo=0.85, mat_ltv_trigger=1.05, mat_cure=0.30,
+    mat_ltv_lo=0.80, mat_ltv_trigger=1.05, mat_cure=0.20,
 )
 
 
