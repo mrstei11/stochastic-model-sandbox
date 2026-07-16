@@ -789,7 +789,11 @@ def compute_summary(irr_df: pd.DataFrame) -> pd.DataFrame:
         vals = grp["IRR"].dropna().values
         mean_irr = vals.mean()
         sd_irr   = vals.std()
-        dd       = np.std(np.maximum(0, MAR - vals))
+        # downside deviation: RMS of below-MAR shortfalls (all observations,
+        # zero for outcomes above target) — the standard Sortino denominator.
+        # np.std(max(0, MAR - vals)) subtracts the mean shortfall first,
+        # which understates risk for consistently-short sectors.
+        dd       = np.sqrt(np.mean(np.minimum(0.0, vals - MAR) ** 2))
         sharpe   = (mean_irr - RISK_FREE) / sd_irr if sd_irr > 0 else np.nan
         sortino  = (mean_irr - MAR) / dd           if dd > 0   else np.nan
         return pd.Series({
