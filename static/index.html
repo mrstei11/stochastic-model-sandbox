@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MIM Stochastic Real Estate Model</title>
+  <!-- Bootswatch Flatly — exact same theme as shinythemes::flatly in R Shiny -->
+  <link rel="stylesheet" href="/vendor/bootstrap.min.css">
+  <!-- DataTables — the exact JS library R's DT package wraps -->
+  <link rel="stylesheet" href="/vendor/dataTables.bootstrap5.min.css">
+  <link rel="stylesheet" href="/vendor/select.bootstrap5.min.css">
+  <style>
+    body { font-size: 13px; }
+    .metric-value { font-size: 1.25rem; font-weight: 700; color: #2c3e50; }
+    .metric-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: .06em; color: #7f8c8d; font-weight: 600; margin-bottom: 2px; }
+    .chart-wrap   { position: relative; height: 280px; }
+    .nav-tabs .nav-link { color: #18bc9c; }
+    .nav-tabs .nav-link.active { color: #2c3e50; font-weight: 600; }
+    .nav-tabs .nav-link:hover { color: #128f76; }
+    .delta-pos { color: #18bc9c; font-weight: 600; }
+    .delta-neg { color: #e74c3c; font-weight: 600; }
+    .warn  { color: #f39c12; font-weight: 600; }
+    .bad   { color: #e74c3c; font-weight: 600; }
+    .card-header { background: #f8f9fa; font-size: 13px; padding: 8px 14px; }
+    .card-body   { padding: 12px 14px; }
+    .table-sm td, .table-sm th { padding: 5px 8px; }
+    .spinner-wrap { text-align: center; padding: 40px; color: #7f8c8d; }
+    select.form-select-sm { font-size: 13px; }
+  </style>
+</head>
+<body>
+
+<!-- ── Navbar ──────────────────────────────────────────────────────────── -->
+<nav class="navbar navbar-dark bg-primary px-3 py-2">
+  <span class="navbar-brand fw-bold fs-6">MIM Stochastic Real Estate Model</span>
+  <span class="text-white opacity-75 small" id="subtitle"></span>
+</nav>
+
+<!-- ── Tabs ───────────────────────────────────────────────────────────── -->
+<div class="container-fluid px-4 mt-3">
+  <ul class="nav nav-tabs" id="mainTabs">
+    <li class="nav-item"><a class="nav-link active" data-tab="dashboard"   href="#">Dashboard Summary</a></li>
+    <li class="nav-item"><a class="nav-link"        data-tab="annualret"   href="#">Annual Returns</a></li>
+    <li class="nav-item"><a class="nav-link"        data-tab="calibration" href="#">Calibration (Inputs vs Realized)</a></li>
+    <li class="nav-item"><a class="nav-link"        data-tab="credit"      href="#">Credit Analysis</a></li>
+    <li class="nav-item"><a class="nav-link"        data-tab="basedcf"     href="#">Base Case DCF</a></li>
+    <li class="nav-item"><a class="nav-link"        data-tab="baseloan"    href="#">Base Case Loan</a></li>
+    <li class="nav-item"><a class="nav-link"        data-tab="individual"  href="#">Review Individual DCFs</a></li>
+  </ul>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       TAB: Dashboard Summary
+  ════════════════════════════════════════════════════════════════════ -->
+  <div id="tab-dashboard" class="tab-panel mt-3">
+    <div class="row g-2 mb-3 align-items-end">
+      <div class="col-auto">
+        <div class="fw-semibold small text-muted text-uppercase mb-1">Property Type</div>
+        <select id="dash-proptype" class="form-select form-select-sm" style="min-width:210px"></select>
+      </div>
+      <div class="col-auto">
+        <div class="fw-semibold small text-muted text-uppercase mb-1">Random Variable</div>
+        <select id="dash-variable" class="form-select form-select-sm" style="min-width:230px">
+          <option value="random_growth_rev">Revenue Growth</option>
+          <option value="random_growth_exp">Expense Growth</option>
+          <option value="capex">CapEx % of NOI (random draw)</option>
+          <option value="capspread">Cap Rate Spread (random draw)</option>
+          <option value="running_cap_rate">Running Cap Rate</option>
+        </select>
+      </div>
+    </div>
+    <div class="row g-3 mb-4">
+      <div class="col-xl-6">
+        <div class="card h-100">
+          <div class="card-header fw-semibold" id="kde-title">IRR Distribution</div>
+          <div class="card-body"><div class="chart-wrap"><canvas id="kde-chart"></canvas></div></div>
+        </div>
+      </div>
+      <div class="col-xl-6">
+        <div class="card h-100">
+          <div class="card-header fw-semibold" id="var-title">Variable Distribution</div>
+          <div class="card-body"><div class="chart-wrap"><canvas id="var-chart"></canvas></div></div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header fw-semibold">Summary Statistics — All Property Types</div>
+      <div class="card-body">
+        <table id="summary-table" class="table table-striped table-bordered table-sm w-100"></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════       TAB: Annual Returns
+  ══════════════════════════════════════════════════════════════════ -->
+  <div id="tab-annualret" class="tab-panel mt-3" style="display:none">
+    <div class="card mb-4">
+      <div class="card-header fw-semibold">Annual Total Return by Property Type (Median of 10,000 Simulations)</div>
+      <div class="card-body">
+        <p class="text-muted small mb-2">NCREIF-style total return = (NOI + Appreciation) / Beginning Value. Intermediate values marked-to-market using forward NOI / cap rate. All columns sortable.</p>
+        <table id="annret-table" class="table table-striped table-bordered table-sm w-100"></table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header fw-semibold">Annual Return Profile — All Property Types</div>
+      <div class="card-body">
+        <canvas id="annret-chart" height="90"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════       TAB: Calibration
+  ════════════════════════════════════════════════════════════════════ -->
+  <div id="tab-calibration" class="tab-panel mt-3" style="display:none">
+    <div class="card">
+      <div class="card-header fw-semibold">Calibration: Inputs vs Realized</div>
+      <div class="card-body">
+        <p class="text-muted small mb-2">Compares key input assumptions against averages realized across all simulations. Δ columns highlight divergences &gt; 5 bps.</p>
+        <table id="cal-table" class="table table-striped table-bordered table-sm w-100"></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       TAB: Credit Analysis
+  ════════════════════════════════════════════════════════════════════ -->
+  <div id="tab-credit" class="tab-panel mt-3" style="display:none">
+    <div class="card">
+      <div class="card-header fw-semibold">Credit Analysis</div>
+      <div class="card-body">
+        <p class="text-muted small mb-2">LTV from survey inputs · 5% liquidation haircut on exit value · 10-year hold period.</p>
+        <table id="credit-table" class="table table-striped table-bordered table-sm w-100"></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       TAB: Base Case DCF
+  ════════════════════════════════════════════════════════════════════ -->
+  <div id="tab-basedcf" class="tab-panel mt-3" style="display:none">
+    <div class="row g-2 mb-3 align-items-end">
+      <div class="col-auto">
+        <div class="fw-semibold small text-muted text-uppercase mb-1">Property Type</div>
+        <select id="dcf-proptype" class="form-select form-select-sm" style="min-width:210px"></select>
+      </div>
+    </div>
+    <div class="row g-2 mb-3" id="dcf-metrics"></div>
+    <div class="card">
+      <div class="card-header fw-semibold">Base Case Cash Flow Projection</div>
+      <div class="card-body">
+        <table id="dcf-table" class="table table-striped table-bordered table-sm w-100"></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       TAB: Base Case Loan
+  ════════════════════════════════════════════════════════════════════ -->
+  <div id="tab-baseloan" class="tab-panel mt-3" style="display:none">
+    <div class="row g-2 mb-3 align-items-end">
+      <div class="col-auto">
+        <div class="fw-semibold small text-muted text-uppercase mb-1">Property Type</div>
+        <select id="loan-proptype" class="form-select form-select-sm" style="min-width:210px"></select>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header fw-semibold">Base Case Loan Pro Forma</div>
+      <div class="card-body">
+        <p class="text-muted small mb-2">DSCR &lt; 1.20 shown in orange &bull; LTV &gt; 65% shown in orange.</p>
+        <table id="loan-table" class="table table-striped table-bordered table-sm w-100"></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       TAB: Individual DCF
+  ════════════════════════════════════════════════════════════════════ -->
+  <div id="tab-individual" class="tab-panel mt-3" style="display:none">
+    <div class="row g-2 mb-3 align-items-end">
+      <div class="col-auto">
+        <div class="fw-semibold small text-muted text-uppercase mb-1">Property Type</div>
+        <select id="ind-proptype" class="form-select form-select-sm" style="min-width:210px"></select>
+      </div>
+      <div class="col-auto">
+        <div class="fw-semibold small text-muted text-uppercase mb-1">Simulation ID</div>
+        <select id="ind-simid" class="form-select form-select-sm" style="min-width:130px"></select>
+      </div>
+    </div>
+    <div class="row g-2 mb-3" id="ind-metrics"></div>
+    <div class="card">
+      <div class="card-header fw-semibold">Diagnostic Cash Flow Projection</div>
+      <div class="card-body">
+        <table id="ind-table" class="table table-striped table-bordered table-sm w-100"></table>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /container -->
+
+<!-- ── Scripts ────────────────────────────────────────────────────────── -->
+<script src="/vendor/jquery-3.7.1.min.js"></script>
+<script src="/vendor/bootstrap.bundle.min.js"></script>
+<script src="/vendor/dataTables.min.js"></script>
+<script src="/vendor/dataTables.bootstrap5.min.js"></script>
+<script src="/vendor/dataTables.select.min.js"></script>
+<script src="/vendor/chart.umd.min.js"></script>
+<script>
+'use strict';
+
+// ── Formatters (match fmt.js exactly) ─────────────────────────────────────
+const fmtPct    = (v, d=2) => v == null ? '—' : (v*100).toFixed(d) + '%'
+const fmtDollar = (v)      => v == null ? '—' : '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})
+const fmtBps    = (v, d=1) => v == null ? '—' : Number(v).toFixed(d)   // already in bps
+const fmtRound  = (v, d=2) => v == null ? '—' : Number(v).toFixed(d)
+
+// ── API helpers ────────────────────────────────────────────────────────────
+const api = {
+  get: (path) => fetch(path).then(r => r.json()),
+  propertyTypes:   ()       => api.get('/api/property-types'),
+  summary:         ()       => api.get('/api/summary'),
+  irrKde:          (pt)     => api.get('/api/irr-kde?proptype=' + encodeURIComponent(pt)),
+  varHistogram:    (pt, v)  => api.get(`/api/variable-histogram?proptype=${encodeURIComponent(pt)}&variable=${v}`),
+  calibration:     ()       => api.get('/api/calibration'),
+  annualReturns:   ()       => api.get('/api/annual-returns'),
+  debtSummary:     ()       => api.get('/api/debt-summary'),
+  baseDcf:         (pt)     => api.get('/api/base-case-dcf?proptype=' + encodeURIComponent(pt)),
+  baseLoan:        (pt)     => api.get('/api/base-case-loan?proptype=' + encodeURIComponent(pt)),
+  simIds:          (pt)     => api.get('/api/sim-ids?proptype=' + encodeURIComponent(pt)),
+  individualDcf:   (pt, id) => api.get(`/api/individual-dcf?proptype=${encodeURIComponent(pt)}&sim_id=${id}`),
+}
+
+// ── DataTable helpers ──────────────────────────────────────────────────────
+const DT_DEFAULTS = {
+  pageLength: 10,
+  lengthMenu: [10, 25, 50, 100],
+  select: { style: 'multi' },
+  order: [],
+  language: { search: 'Search:' },
+}
+
+function makeTable(id, cols, data, opts={}) {
+  const el = document.getElementById(id)
+  if ($.fn.DataTable.isDataTable('#'+id)) $('#'+id).DataTable().destroy()
+  el.innerHTML = ''
+  return $('#'+id).DataTable({
+    ...DT_DEFAULTS, ...opts,
+    columns: cols,
+    data: data,
+  })
+}
+
+// Rating badge
+function ratingBadge(v) {
+  if (!v) return '—'
+  const base = v.replace(/[0-9]/g,'')
+  const cls = base === 'Aaa' ? 'bg-success' :
+              base === 'Aa'  ? 'bg-info text-dark' :
+              base === 'A'   ? 'bg-warning text-dark' :
+              base === 'Baa' ? 'bg-danger' : 'bg-secondary'
+  return `<span class="badge ${cls}">${v}</span>`
+}
+
+// Delta cell renderer
+function deltaRender(v) {
+  if (v == null) return '—'
+  const cls = Math.abs(v) < 0.0005 ? '' : v > 0 ? 'delta-pos' : 'delta-neg'
+  return `<span class="${cls}">${fmtPct(v,2)}</span>`
+}
+
+// Metric cards row
+function metricCards(containerId, cards) {
+  const c = document.getElementById(containerId)
+  c.innerHTML = cards.map(({label, value}) => `
+    <div class="col-auto">
+      <div class="card text-center px-3 py-2" style="min-width:130px">
+        <div class="metric-label">${label}</div>
+        <div class="metric-value">${value ?? '—'}</div>
+      </div>
+    </div>`).join('')
+}
+
+// Chart.js helpers
+let kdeChart, varChart
+function buildKde(points) {
+  if (kdeChart) kdeChart.destroy()
+  kdeChart = new Chart(document.getElementById('kde-chart'), {
+    type: 'line',
+    data: {
+      labels: points.map(p => (p.x*100).toFixed(1)),
+      datasets: [{
+        data: points.map(p => p.y),
+        borderColor: '#2980b9', backgroundColor: 'rgba(41,128,185,0.15)',
+        fill: true, pointRadius: 0, tension: 0.4, borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { title: { display: true, text: 'IRR (%)' }, ticks: { maxTicksLimit: 10 } },
+        y: { title: { display: true, text: 'Density' }, grid: { color: '#f0f0f0' } },
+      }
+    }
+  })
+}
+
+function buildHistogram(bins, xIsPct) {
+  if (varChart) varChart.destroy()
+  const fmt = xIsPct ? v => (v*100).toFixed(2) : v => Number(v).toFixed(4)
+  varChart = new Chart(document.getElementById('var-chart'), {
+    type: 'bar',
+    data: {
+      labels: bins.map(b => fmt((b.x0 + b.x1)/2)),
+      datasets: [{
+        data: bins.map(b => b.count),
+        backgroundColor: 'rgba(41,128,185,0.6)', borderColor: '#2980b9', borderWidth: 1,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { title: { display: true, text: xIsPct ? 'Value (%)' : 'Value' }, ticks: { maxTicksLimit: 12 } },
+        y: { title: { display: true, text: 'Count' }, grid: { color: '#f0f0f0' } },
+      }
+    }
+  })
+}
+
+// Populate a <select> with property types
+function fillSelect(id, types, selected) {
+  const el = document.getElementById(id)
+  el.innerHTML = types.map(t => `<option${t===selected?' selected':''}>${t}</option>`).join('')
+}
+
+// ── State ──────────────────────────────────────────────────────────────────
+let propTypes = []
+let initialized = {}  // track which tabs have been loaded
+
+// ── Tab switching ──────────────────────────────────────────────────────────
+document.querySelectorAll('#mainTabs .nav-link').forEach(link => {
+  link.addEventListener('click', e => {
+    e.preventDefault()
+    document.querySelectorAll('#mainTabs .nav-link').forEach(l => l.classList.remove('active'))
+    link.classList.add('active')
+    document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none')
+    const tab = link.dataset.tab
+    document.getElementById('tab-' + tab).style.display = ''
+    loadTab(tab)
+  })
+})
+
+// ── Lazy tab loaders ───────────────────────────────────────────────────────
+async function loadTab(tab) {
+  if (initialized[tab]) return
+  initialized[tab] = true
+  switch(tab) {
+    case 'dashboard':   await loadDashboard();      break
+    case 'annualret':   await loadAnnualReturns();  break
+    case 'calibration': await loadCalibration();    break
+    case 'credit':      await loadCredit();         break
+    case 'basedcf':     loadBaseDcf();              break
+    case 'baseloan':    loadBaseLoan();             break
+    case 'individual':  loadIndividual();           break
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// DASHBOARD
+// ══════════════════════════════════════════════════════════════════════════
+async function loadDashboard() {
+  const pt = propTypes[0] ?? ''
+
+  // Populate controls
+  fillSelect('dash-proptype', propTypes, pt)
+  document.getElementById('dash-proptype').addEventListener('change', () => {
+    refreshKde(); refreshVar()
+  })
+  document.getElementById('dash-variable').addEventListener('change', refreshVar)
+
+  // Summary table
+  const summaryData = await api.summary()
+  const sumCols = [
+    { title: 'Property Type',  data: 'proptype' },
+    { title: 'Mean IRR',       data: 'mean_IRR',      render: v => fmtPct(v,3),    className: 'dt-type-numeric' },
+    { title: 'Std Dev IRR',    data: 'sd_IRR',        render: v => fmtPct(v,3),    className: 'dt-type-numeric' },
+    { title: 'Min IRR',        data: 'min_IRR',       render: v => fmtPct(v,3),    className: 'dt-type-numeric' },
+    { title: 'Max IRR',        data: 'max_IRR',       render: v => fmtPct(v,3),    className: 'dt-type-numeric' },
+    { title: 'Sharpe',         data: 'sharpe_ratio',  render: v => fmtRound(v,3),  className: 'dt-type-numeric' },
+    { title: 'Sortino',        data: 'sortino_ratio', render: v => fmtRound(v,3),  className: 'dt-type-numeric' },
+  ]
+  makeTable('summary-table', sumCols, summaryData)
+
+  // Charts
+  await refreshKde()
+  await refreshVar()
+}
+
+async function refreshKde() {
+  const pt = document.getElementById('dash-proptype').value
+  document.getElementById('kde-title').textContent = 'IRR Distribution — ' + pt
+  const data = await api.irrKde(pt)
+  buildKde(data.points)
+}
+
+async function refreshVar() {
+  const pt  = document.getElementById('dash-proptype').value
+  const sel = document.getElementById('dash-variable')
+  const variable = sel.value
+  const label = sel.options[sel.selectedIndex].text
+  const xIsPct = variable !== 'capex'
+  document.getElementById('var-title').textContent = label + ' — ' + pt
+  const data = await api.varHistogram(pt, variable)
+  buildHistogram(data.bins, xIsPct)
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// CALIBRATION
+// ══════════════════════════════════════════════════════════════════════════
+async function loadCalibration() {
+  const data = await api.calibration()
+  const cols = [
+    { title: 'Property Type',       data: 'proptype' },
+    { title: 'Input Rev CAGR',      data: 'drevenue',           render: v => fmtPct(v,2), className:'dt-type-numeric' },
+    { title: 'Realized Rev CAGR',   data: 'realized_rev_cagr',  render: v => fmtPct(v,2), className:'dt-type-numeric' },
+    { title: 'Rev Δ',               data: 'rev_cagr_diff',      render: deltaRender,       className:'dt-type-numeric' },
+    { title: 'Input Exp CAGR',      data: 'dexpense',           render: v => fmtPct(v,2), className:'dt-type-numeric' },
+    { title: 'Realized Exp CAGR',   data: 'realized_exp_cagr',  render: v => fmtPct(v,2), className:'dt-type-numeric' },
+    { title: 'Exp Δ',               data: 'exp_cagr_diff',      render: deltaRender,       className:'dt-type-numeric' },
+    { title: 'Input CapEx',         data: 'capex',              render: v => fmtPct(v,2), className:'dt-type-numeric' },
+    { title: 'Realized CapEx',      data: 'realized_capex',     render: v => fmtPct(v,2), className:'dt-type-numeric' },
+    { title: 'CapEx Δ',             data: 'capex_diff',         render: deltaRender,       className:'dt-type-numeric' },
+    { title: 'Input Cap Rate',      data: 'caprate',            render: v => fmtPct(v,2), className:'dt-type-numeric' },
+    { title: 'Realized Start Cap',  data: 'realized_start_cap', render: v => fmtPct(v,2), className:'dt-type-numeric' },
+    { title: 'Realized Exit Cap',   data: 'realized_exit_cap',  render: v => fmtPct(v,2), className:'dt-type-numeric' },
+    { title: 'Exit Cap Δ',          data: 'exit_cap_diff',      render: deltaRender,       className:'dt-type-numeric' },
+    { title: 'SD Rev',              data: 'stdevrev',           render: v => fmtRound(v,3), className:'dt-type-numeric' },
+    { title: 'SD Exp',              data: 'stdevexpense',       render: v => fmtRound(v,3), className:'dt-type-numeric' },
+    { title: 'SD CapEx',            data: 'stdevcapex',         render: v => fmtRound(v,3), className:'dt-type-numeric' },
+    { title: 'SD Cap Spread',       data: 'stdevcapspread',     render: v => fmtRound(v,3), className:'dt-type-numeric' },
+  ]
+  makeTable('cal-table', cols, data, { scrollX: true })
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// ANNUAL RETURNS
+// ══════════════════════════════════════════════════════════════════════════
+let annRetChart = null
+
+async function loadAnnualReturns() {
+  const data = await api.annualReturns()
+
+  // ── Table ──────────────────────────────────────────────────────────────
+  const pctNum = { render: v => fmtPct(v, 2), className: 'dt-type-numeric' }
+  const cols = [
+    { title: 'Property Type', data: 'proptype' },
+    { title: 'Yr 1',  data: 'year_1',   ...pctNum },
+    { title: 'Yr 2',  data: 'year_2',   ...pctNum },
+    { title: 'Yr 3',  data: 'year_3',   ...pctNum },
+    { title: 'Yr 4',  data: 'year_4',   ...pctNum },
+    { title: 'Yr 5',  data: 'year_5',   ...pctNum },
+    { title: 'Yr 6',  data: 'year_6',   ...pctNum },
+    { title: 'Yr 7',  data: 'year_7',   ...pctNum },
+    { title: 'Yr 8',  data: 'year_8',   ...pctNum },
+    { title: 'Yr 9',  data: 'year_9',   ...pctNum },
+    { title: 'Yr 10', data: 'year_10',  ...pctNum },
+    { title: '3-Yr CAGR', data: 'cagr_3yr', ...pctNum },
+    { title: '5-Yr CAGR', data: 'cagr_5yr', ...pctNum },
+  ]
+  makeTable('annret-table', cols, data, { scrollX: true })
+
+  // ── Chart ─────────────────────────────────────────────────────────────
+  const CHART_COLORS = [
+    '#1abc9c','#2ecc71','#3498db','#9b59b6','#e74c3c',
+    '#e67e22','#f1c40f','#1a252f','#16a085','#8e44ad',
+    '#2980b9','#27ae60','#d35400','#c0392b','#2c3e50',
+    '#7f8c8d','#bdc3c7','#6c3483','#148f77','#b7950b','#784212'
+  ]
+  const labels = ['Yr 1','Yr 2','Yr 3','Yr 4','Yr 5','Yr 6','Yr 7','Yr 8','Yr 9','Yr 10']
+  const datasets = data.map((row, i) => ({
+    label: row.proptype,
+    data:  labels.map((_, t) => row[`year_${t+1}`] != null ? +(row[`year_${t+1}`] * 100).toFixed(2) : null),
+    borderColor: CHART_COLORS[i % CHART_COLORS.length],
+    backgroundColor: 'transparent',
+    tension: 0.3,
+    pointRadius: 3,
+    borderWidth: 1.5,
+  }))
+
+  if (annRetChart) annRetChart.destroy()
+  annRetChart = new Chart(document.getElementById('annret-chart'), {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { position: 'right', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y != null ? ctx.parsed.y.toFixed(2) + '%' : '—'}`
+          }
+        }
+      },
+      scales: {
+        y: {
+          ticks: { callback: v => v.toFixed(1) + '%' },
+          title: { display: true, text: 'Total Return (%)' }
+        }
+      }
+    }
+  })
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// CREDIT
+// ══════════════════════════════════════════════════════════════════════════
+async function loadCredit() {
+  const data = await api.debtSummary()
+  const cols = [
+    { title: 'Property Type',       data: 'proptype' },
+    { title: 'Spread (bps)',        data: 'Spread_bps',               render: v => fmtBps(v,1),  className:'dt-type-numeric' },
+    { title: 'PD',                  data: 'PD',                       render: v => fmtPct(v,3),  className:'dt-type-numeric' },
+    { title: 'Avg LGD',             data: 'Avg_LGD',                  render: v => fmtPct(v,3),  className:'dt-type-numeric' },
+    { title: 'Total EL',            data: 'Total_EL',                 render: v => fmtPct(v,3),  className:'dt-type-numeric' },
+    { title: 'Ann EL',              data: 'Ann_EL',                   render: v => fmtPct(v,3),  className:'dt-type-numeric' },
+    { title: 'Ann EL (bps)',        data: 'Ann_EL_bps',               render: v => fmtBps(v,1),  className:'dt-type-numeric' },
+    { title: 'Loss-Adj Spread (bps)', data: 'Loss_Adjusted_Spread_bps',
+      render: v => v == null ? '—' : `<span class="${v < 0 ? 'bad' : ''}">${fmtBps(v,1)}</span>`,
+      className: 'dt-type-numeric' },
+    { title: 'Rating', data: 'Rating', render: ratingBadge },
+  ]
+  makeTable('credit-table', cols, data)
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// BASE CASE DCF
+// ══════════════════════════════════════════════════════════════════════════
+function loadBaseDcf() {
+  fillSelect('dcf-proptype', propTypes, propTypes[0])
+  document.getElementById('dcf-proptype').addEventListener('change', refreshDcf)
+  refreshDcf()
+}
+
+async function refreshDcf() {
+  const pt = document.getElementById('dcf-proptype').value
+  const data = await api.baseDcf(pt)
+  const m = data.metrics
+  metricCards('dcf-metrics', [
+    { label: 'Base Case IRR',        value: fmtPct(m.irr) },
+    { label: 'Starting Cap Rate',    value: fmtPct(m.start_cap) },
+    { label: 'Exit Cap Rate',        value: fmtPct(m.exit_cap) },
+    { label: '10yr Avg Rev Growth',  value: fmtPct(m.avg_rev_growth) },
+    { label: '10yr Avg Exp Growth',  value: fmtPct(m.avg_exp_growth) },
+    { label: 'Avg CapEx (yrs 2–10)', value: fmtPct(m.avg_capex) },
+  ])
+  const cols = [
+    { title: 'Year #',      data: 't',                className:'dt-type-numeric' },
+    { title: 'Cal Year',    data: 'year',             className:'dt-type-numeric' },
+    { title: 'Type',        data: 'row_type' },
+    { title: 'Revenue',     data: 'revenue',          render: fmtDollar, className:'dt-type-numeric' },
+    { title: 'Expense',     data: 'expense',          render: fmtDollar, className:'dt-type-numeric' },
+    { title: 'NOI',         data: 'noi',              render: fmtDollar, className:'dt-type-numeric' },
+    { title: 'CapEx % NOI', data: 'capex',            render: v => fmtPct(v,2), className:'dt-type-numeric' },
+    { title: 'Cap Spread',  data: 'capspread',        render: v => fmtPct(v,2), className:'dt-type-numeric' },
+    { title: 'Cap Rate',    data: 'running_cap_rate', render: v => fmtPct(v,2), className:'dt-type-numeric' },
+    { title: 'Total CF',    data: 'totalcf',          render: fmtDollar, className:'dt-type-numeric' },
+  ]
+  makeTable('dcf-table', cols, data.rows, {
+    paging: false, searching: false, info: false,
+    createdRow: (row, d) => {
+      if (d.row_type === 'Purchase') $(row).css('font-weight','700')
+      else if ((d.row_type||'').startsWith('Forward')) $(row).css('color','#aaa')
+    }
+  })
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// BASE CASE LOAN
+// ══════════════════════════════════════════════════════════════════════════
+function loadBaseLoan() {
+  fillSelect('loan-proptype', propTypes, propTypes[0])
+  document.getElementById('loan-proptype').addEventListener('change', refreshLoan)
+  refreshLoan()
+}
+
+async function refreshLoan() {
+  const pt = document.getElementById('loan-proptype').value
+  const rows = await api.baseLoan(pt)
+  const cols = [
+    { title: 'Year',             data: 'year',             className:'dt-type-numeric' },
+    { title: 'NOI',              data: 'noi',              render: fmtDollar,           className:'dt-type-numeric' },
+    { title: 'Annual Interest',  data: 'annual_interest',  render: fmtDollar,           className:'dt-type-numeric' },
+    { title: 'DSCR',             data: 'DSCR',
+      render: v => v == null ? '—' : `<span class="${v<1.0?'bad':v<1.2?'warn':''}">${fmtRound(v,2)}</span>`,
+      className:'dt-type-numeric' },
+    { title: 'Debt Yield',       data: 'Debt_Yield',       render: v => fmtPct(v,2),   className:'dt-type-numeric' },
+    { title: 'Cap Rate',         data: 'running_cap_rate', render: v => fmtPct(v,2),   className:'dt-type-numeric' },
+    { title: 'LTV',              data: 'LTV',
+      render: v => v == null ? '—' : `<span class="${v>0.75?'bad':v>0.65?'warn':''}">${fmtPct(v,2)}</span>`,
+      className:'dt-type-numeric' },
+    { title: 'Exit Value',       data: 'Exit_Value',       render: fmtDollar,           className:'dt-type-numeric' },
+    { title: 'Exit LTV',         data: 'Exit_LTV',         render: v => fmtPct(v,2),   className:'dt-type-numeric' },
+  ]
+  makeTable('loan-table', cols, rows, { paging: false, searching: false, info: false })
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// INDIVIDUAL DCF
+// ══════════════════════════════════════════════════════════════════════════
+function loadIndividual() {
+  fillSelect('ind-proptype', propTypes, propTypes[0])
+  document.getElementById('ind-proptype').addEventListener('change', async () => {
+    await refreshSimIds()
+    await refreshIndDcf()
+  })
+  document.getElementById('ind-simid').addEventListener('change', refreshIndDcf)
+  refreshSimIds().then(refreshIndDcf)
+}
+
+async function refreshSimIds() {
+  const pt = document.getElementById('ind-proptype').value
+  const ids = await api.simIds(pt)
+  const el = document.getElementById('ind-simid')
+  el.innerHTML = ids.map(id => `<option value="${id}">${id}</option>`).join('')
+}
+
+async function refreshIndDcf() {
+  const pt   = document.getElementById('ind-proptype').value
+  const id   = document.getElementById('ind-simid').value
+  if (!id) return
+  const data = await api.individualDcf(pt, id)
+  const m = data.metrics
+  metricCards('ind-metrics', [
+    { label: 'Model IRR',            value: fmtPct(m.irr) },
+    { label: 'Starting Cap Rate',    value: fmtPct(m.start_cap) },
+    { label: 'Exit Cap Rate',        value: fmtPct(m.exit_cap) },
+    { label: '10yr Avg Rev Growth',  value: fmtPct(m.avg_rev_growth) },
+    { label: '10yr Avg Exp Growth',  value: fmtPct(m.avg_exp_growth) },
+    { label: 'Avg CapEx (yrs 2–10)', value: fmtPct(m.avg_capex) },
+  ])
+  const cols = [
+    { title: 'Year #',      data: 't',                 className:'dt-type-numeric' },
+    { title: 'Cal Year',    data: 'year',              className:'dt-type-numeric' },
+    { title: 'Type',        data: 'row_type' },
+    { title: 'Revenue',     data: 'revenue',           render: fmtDollar, className:'dt-type-numeric' },
+    { title: 'Rev Growth',  data: 'random_growth_rev', render: v => fmtPct(v,2),  className:'dt-type-numeric' },
+    { title: 'Expense',     data: 'expense',           render: fmtDollar, className:'dt-type-numeric' },
+    { title: 'Exp Growth',  data: 'random_growth_exp', render: v => fmtPct(v,2),  className:'dt-type-numeric' },
+    { title: 'Cap Rate',    data: 'running_cap_rate',  render: v => fmtPct(v,2),  className:'dt-type-numeric' },
+    { title: 'NOI',         data: 'noi',               render: fmtDollar, className:'dt-type-numeric' },
+    { title: 'Total CF',    data: 'totalcf',           render: fmtDollar, className:'dt-type-numeric' },
+  ]
+  makeTable('ind-table', cols, data.rows, {
+    paging: false, searching: false, info: false,
+    createdRow: (row, d) => {
+      if (d.row_type === 'Purchase') $(row).css('font-weight','700')
+      else if ((d.row_type||'').startsWith('Forward')) $(row).css('color','#aaa')
+    }
+  })
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// INIT
+// ══════════════════════════════════════════════════════════════════════════
+(async () => {
+  propTypes = await api.propertyTypes()
+  document.getElementById('subtitle').textContent =
+    propTypes.length + ' property types · 10,000 simulations · 10-year hold'
+
+  // Pre-fill all property type selects
+  ;['dcf-proptype','loan-proptype','ind-proptype'].forEach(id =>
+    fillSelect(id, propTypes, propTypes[0]))
+
+  // Load the default tab (dashboard)
+  await loadTab('dashboard')
+})()
+</script>
+</body>
+</html>

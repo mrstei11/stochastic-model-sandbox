@@ -1,0 +1,13 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Redundant zip archives (contents extracted to static/ and frontend/)
+*.zip
+
+# Local editor/session settings
+.claude/settings.local.json
+
+# Office temp files
+~$*.xlsx
