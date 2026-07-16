@@ -1,0 +1,7 @@
+numpy
+pandas
+scipy
+fastapi
+uvicorn
+openpyxl
+numpy-financial
