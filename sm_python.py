@@ -55,7 +55,9 @@ EXP_MEAN_REVERSION  = 0.10     # gentler than revenue: costs are sticky — they
                                # track the inflation trend but adjust slower
                                # than revenue recovers (κ=0.25 proved so strong
                                # it erased the vol-driven credit differentiation)
-RHO                 = 0.70     # revenue/expense growth correlation
+RHO                 = 0.70     # revenue/expense growth correlation — fallback
+                               # only; per-sector values come from the optional
+                               # rev_exp_corr column in the data workbook
 RISK_FREE           = 0.0425
 MAR                 = 0.07     # minimum acceptable return for Sortino
 TERMINAL_REV_GROWTH = 0.03     # revenue growth rate pinned for final years
@@ -121,7 +123,14 @@ def load_data() -> pd.DataFrame:
                           "LTV": "ltv", "Debt Yield": "debt_yield"})
     )
     debt["spread"] = debt["spread_bps"] / 10_000
-    return data.merge(debt, on="proptype", how="left")
+    merged = data.merge(debt, on="proptype", how="left")
+    # Per-sector revenue/expense growth correlation. Optional input column so
+    # the input-refresh process owns it alongside the vols; falls back to the
+    # global RHO for missing values or an absent column.
+    if "rev_exp_corr" not in merged.columns:
+        merged["rev_exp_corr"] = RHO
+    merged["rev_exp_corr"] = merged["rev_exp_corr"].fillna(RHO).clip(-0.99, 0.99)
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -478,9 +487,11 @@ def simulate_property_type(row: pd.Series, n_sim: int, seed: int = 42
     n_early = n_total_growth - N_TERMINAL_REV   # 6 stochastic growth periods
 
     # Early years: Gaussian copula → skew-normal (rev correlated with exp)
+    rho = row.rev_exp_corr
+    cov = [[1, rho], [rho, 1]]
     z = rng.multivariate_normal(
         [0, 0],
-        [[1, RHO], [RHO, 1]],
+        cov,
         size=(n_sim, n_early)
     )  # shape (n_sim, n_early, 2)
     u_rev_early = stats.norm.cdf(z[:, :, 0])   # (n_sim, n_early)
@@ -500,12 +511,14 @@ def simulate_property_type(row: pd.Series, n_sim: int, seed: int = 42
     # so the distribution tapers smoothly rather than creating a hard spike.
     term_w    = np.linspace(1.0 / N_TERMINAL_REV, 1.0, N_TERMINAL_REV)  # [0.25,0.50,0.75,1.00]
     term_sds  = (1.0 - term_w) * sd_rev + term_w * TERMINAL_REV_SD      # (N_TERMINAL_REV,)
-    g_rev_term = (rng.standard_normal((n_sim, N_TERMINAL_REV))
-                  * term_sds[None, :] + TERMINAL_REV_GROWTH)             # (n_sim, 4)
-    z_exp_term = rng.multivariate_normal(
-        [0, 0], [[1, RHO], [RHO, 1]], size=(n_sim, N_TERMINAL_REV)
-    )
-    u_exp_term = stats.norm.cdf(z_exp_term[:, :, 1])
+    # One bivariate draw per terminal year feeds BOTH marginals, so the
+    # rev/exp correlation holds in years 7-10 just like the early years
+    # (previously revenue noise was drawn independently here).
+    z_term = rng.multivariate_normal(
+        [0, 0], cov, size=(n_sim, N_TERMINAL_REV)
+    )  # (n_sim, N_TERMINAL_REV, 2)
+    g_rev_term = z_term[:, :, 0] * term_sds[None, :] + TERMINAL_REV_GROWTH  # (n_sim, 4)
+    u_exp_term = stats.norm.cdf(z_term[:, :, 1])
     g_exp_term = np.maximum(
         skewnorm_ppf_cp(u_exp_term.ravel(), mu_exp, sd_exp, dial_exp).reshape(n_sim, N_TERMINAL_REV),
         GROWTH_FLOOR
@@ -514,6 +527,11 @@ def simulate_property_type(row: pd.Series, n_sim: int, seed: int = 42
     # Combine: early years first, then terminal  → (n_sim, T-1)
     g_rev_raw = np.hstack([g_rev_early, g_rev_term])
     g_exp_raw = np.hstack([g_exp_early, g_exp_term])
+
+    # Diagnostic: realized correlation of the growth draws, reported next to
+    # the input rev_exp_corr in the calibration table. (Pearson on the skewed
+    # marginals runs slightly below the copula's normal-score rho.)
+    realized_corr = float(np.corrcoef(g_rev_raw.ravel(), g_exp_raw.ravel())[0, 1])
 
     g_rev = g_rev_raw   # floors already applied above
     g_exp = g_exp_raw
@@ -696,6 +714,7 @@ def simulate_property_type(row: pd.Series, n_sim: int, seed: int = 42
 
     return {"irr_data": irr_df, "expanded_data": expanded_df,
             "debt_data": debt_df, "returns_data": returns_df,
+            "realized_corr": realized_corr,
             # raw inputs to run_credit_model, kept for calibration sweeps
             "credit_paths": {"dscr_all": dscr_all, "mv_all": mv_all,
                               "u_def": u_def, "loan_amt": loan_amt,
@@ -893,6 +912,7 @@ data_by_proptype = {pt: data[data["proptype"] == pt].iloc[0] for pt in property_
 print(f"Running {SIM_COUNT:,} simulations × {len(property_types)} property types …")
 all_irr, all_expanded, all_debt, all_returns = [], [], [], []
 credit_paths_by_proptype = {}
+corr_diag = []
 
 for i, ptype in enumerate(property_types):
     print(f"  [{i+1}/{len(property_types)}] {ptype}")
@@ -902,6 +922,9 @@ for i, ptype in enumerate(property_types):
     all_debt.append(res["debt_data"])
     all_returns.append(res["returns_data"])
     credit_paths_by_proptype[ptype] = res["credit_paths"]
+    corr_diag.append({"proptype": ptype,
+                      "input_rev_exp_corr": float(data_by_proptype[ptype].rev_exp_corr),
+                      "realized_rev_exp_corr": res["realized_corr"]})
 
 irr_results      = pd.concat(all_irr,      ignore_index=True)
 random_variables = pd.concat(all_expanded, ignore_index=True)
@@ -910,7 +933,8 @@ annual_returns   = pd.concat(all_returns,  ignore_index=True)
 
 print("Computing summaries …")
 summary_results = compute_summary(irr_results)
-calibration_table = compute_calibration(data, random_variables)
+calibration_table = (compute_calibration(data, random_variables)
+                     .merge(pd.DataFrame(corr_diag), on="proptype"))
 debt_summary = compute_debt_summary(debt_raw)
 
 base_case_dcfs  = pd.concat([run_base_case_dcf(data_by_proptype[pt])  for pt in property_types])
