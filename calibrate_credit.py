@@ -42,7 +42,9 @@ def score(tbl: pd.DataFrame) -> float:
     penalty anchored to the historical record. The anchors say best sectors
     ~5-10, mid ~12-15, upper ~20-25, worst ~50."""
     q = tbl.EL_bps.quantile
-    targets = {0.0: 7.0, 0.25: 9.5, 0.5: 12.0, 0.75: 17.0, 1.0: 65.0}
+    # Core band 10-25 bps (NAIC CM1/CM2 implied EL, CMBS 2.0 experience) with
+    # a few life-co-quality outliers below 10 and the hotel/cold-storage tail above.
+    targets = {0.0: 7.0, 0.25: 11.0, 0.5: 15.0, 0.75: 21.0, 1.0: 62.0}
     s = sum((q(p) - t) ** 2 for p, t in targets.items())
 
     rank = {pt: i for i, pt in enumerate(tbl.proptype)}  # 0 = safest of 21
@@ -55,15 +57,15 @@ def score(tbl: pd.DataFrame) -> float:
 
 if __name__ == "__main__":
     grid = {
-        "a0":          [-6.5, -6.0],
-        "a1":          [1.5, 2.0],
-        "a3":          [1.0, 1.5],
+        "a0":          [-6.0, -5.5],
+        "a1":          [2.0, 2.5],
+        "a3":          [1.5, 2.0, 2.5],
         "lgd_ongoing": [0.057],
-        "edf_floor":   [0.003, 0.004],
-        "lgd_floor":   [0.10, 0.15],
-        "mat_ltv_lo":  [0.75, 0.80, 0.85],
+        "edf_floor":   [0.004, 0.005, 0.006],
+        "lgd_floor":   [0.15, 0.20, 0.25],
+        "mat_ltv_lo":  [0.70, 0.75, 0.80],
         "mat_ltv_trigger": [1.05],
-        "mat_cure":    [0.10, 0.20, 0.30],
+        "mat_cure":    [0.10, 0.20],
     }
     results = []
     for combo in itertools.product(*grid.values()):

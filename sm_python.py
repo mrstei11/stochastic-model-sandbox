@@ -361,8 +361,8 @@ def irr_batch(cf_matrix: np.ndarray) -> np.ndarray:
 CREDIT_PARAMS = dict(
     a0=EDF_A0, a1=EDF_A1, a2=EDF_A2, a3=EDF_A3,
     lgd_ongoing=LGD_ONGOING_PER_YR, lgd_onetime=LGD_ONETIME,
-    edf_floor=0.004, lgd_floor=0.15,
-    mat_ltv_lo=0.80, mat_ltv_trigger=1.05, mat_cure=0.20,
+    edf_floor=0.006, lgd_floor=0.15,
+    mat_ltv_lo=0.75, mat_ltv_trigger=1.05, mat_cure=0.20,
 )
 
 
