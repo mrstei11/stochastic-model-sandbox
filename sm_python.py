@@ -51,6 +51,10 @@ GROWTH_FLOOR        = -0.95
 THETA               = 0.25     # mean-reversion speed for cap-rate spread
 REV_MEAN_REVERSION  = 0.25     # revenue level reversion to trend (OU in logs);
                                # 0 = permanent shocks (random walk), half-life ≈ ln2/κ ≈ 2.4 yrs
+EXP_MEAN_REVERSION  = 0.10     # gentler than revenue: costs are sticky — they
+                               # track the inflation trend but adjust slower
+                               # than revenue recovers (κ=0.25 proved so strong
+                               # it erased the vol-driven credit differentiation)
 RHO                 = 0.70     # revenue/expense growth correlation
 RISK_FREE           = 0.0425
 MAR                 = 0.07     # minimum acceptable return for Sortino
@@ -355,7 +359,7 @@ CREDIT_PARAMS = dict(
     a0=EDF_A0, a1=EDF_A1, a2=EDF_A2, a3=EDF_A3,
     lgd_ongoing=LGD_ONGOING_PER_YR, lgd_onetime=LGD_ONETIME,
     edf_floor=0.004, lgd_floor=0.15,
-    mat_ltv_trigger=1.05, mat_cure=0.40,
+    mat_ltv_trigger=1.05, mat_cure=0.20,
 )
 
 
@@ -549,16 +553,22 @@ def simulate_property_type(row: pd.Series, n_sim: int, seed: int = 42
     ])
     log_trend = np.log(row.revenue) + np.concatenate([[0.0], np.cumsum(log_trend_g)])
 
+    # Expense trend is simpler: no terminal pinning, so it compounds at the
+    # input CAGR for all 10 growth years.
+    log_exp_trend = np.log(row.expense) + np.arange(T) * np.log1p(row.dexpense)
+
     log_rev = np.empty((n_sim, T))
     log_rev[:, 0] = np.log(row.revenue)
-    exp = np.empty((n_sim, T))
-    exp[:, 0] = row.expense
+    log_exp = np.empty((n_sim, T))
+    log_exp[:, 0] = np.log(row.expense)
 
     for i in range(1, T):
-        pull = REV_MEAN_REVERSION * (log_trend[i - 1] - log_rev[:, i - 1])
-        log_rev[:, i] = log_rev[:, i - 1] + np.log1p(g_rev[:, i - 1]) + pull
-        exp[:, i] = exp[:, i - 1] * (1 + g_exp[:, i - 1])
+        pull_r = REV_MEAN_REVERSION * (log_trend[i - 1] - log_rev[:, i - 1])
+        pull_e = EXP_MEAN_REVERSION * (log_exp_trend[i - 1] - log_exp[:, i - 1])
+        log_rev[:, i] = log_rev[:, i - 1] + np.log1p(g_rev[:, i - 1]) + pull_r
+        log_exp[:, i] = log_exp[:, i - 1] + np.log1p(g_exp[:, i - 1]) + pull_e
     rev = np.exp(log_rev)
+    exp = np.exp(log_exp)
 
     # capex for year-0 placeholder = base capex; years 1..T-1 = draws
     capex_full = np.empty((n_sim, T))
@@ -613,8 +623,9 @@ def simulate_property_type(row: pd.Series, n_sim: int, seed: int = 42
     nan_col     = np.full((n_sim, 1), np.nan)
     # realized growth (post mean reversion), so drill-down tables tie out to levels
     g_rev_real  = rev[:, 1:] / rev[:, :-1] - 1.0
+    g_exp_real  = exp[:, 1:] / exp[:, :-1] - 1.0
     g_rev_full  = np.hstack([nan_col, g_rev_real]).ravel()   # prepend NaN for t=0
-    g_exp_full  = np.hstack([nan_col, g_exp]).ravel()
+    g_exp_full  = np.hstack([nan_col, g_exp_real]).ravel()
     expanded_df = pd.DataFrame({
         "simulation_id":     np.repeat(sim_ids, T),
         "proptype":          ptype,

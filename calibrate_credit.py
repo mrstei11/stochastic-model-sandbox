@@ -26,26 +26,43 @@ def el_table(params: dict) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("EL_bps").reset_index(drop=True)
 
 
+# Historical priors (Fitch/KBRA/Moody's): these sectors should rank at the
+# safe and risky ends respectively. Penalize orderings that violate them —
+# quantile-only scoring accepts ladders whose ranking is scrambled (e.g.
+# steep DSCR coefficients rank Self Storage risky because its day-one
+# coverage is thin, inverting the historical record).
+LOW_RISK  = ["Manufactured Housing", "Single-Family Rentals", "Self Storage",
+             "Moderate Income Housing", "Medical Office", "Retail- Net Lease"]
+HIGH_RISK = ["Full-Service Hotels", "Limited-Service Hotels", "Cold Storage",
+             "Life Science", "Office (Excludes Life Science/Medical)"]
+
+
 def score(tbl: pd.DataFrame) -> float:
-    """Squared distance from the target EL ladder (bps): the anchors say
-    best sectors ~5-10, mid ~12-15, upper ~20-25, worst ~50 — so target the
-    whole quantile shape, not just the endpoints (endpoint-only scoring let
-    the floors flatten every sector into one cluster)."""
+    """Squared distance from the target EL ladder (bps) plus an ordering
+    penalty anchored to the historical record. The anchors say best sectors
+    ~5-10, mid ~12-15, upper ~20-25, worst ~50."""
     q = tbl.EL_bps.quantile
     targets = {0.0: 7.5, 0.25: 10.0, 0.5: 14.0, 0.75: 22.0, 1.0: 50.0}
-    return sum((q(p) - t) ** 2 for p, t in targets.items())
+    s = sum((q(p) - t) ** 2 for p, t in targets.items())
+
+    rank = {pt: i for i, pt in enumerate(tbl.proptype)}  # 0 = safest of 21
+    for pt in LOW_RISK:                                   # want rank <= 9
+        s += 25.0 * max(0, rank[pt] - 9) ** 2
+    for pt in HIGH_RISK:                                  # want rank >= 14
+        s += 25.0 * max(0, 14 - rank[pt]) ** 2
+    return s
 
 
 if __name__ == "__main__":
     grid = {
-        "a0":          [-6.5, -6.0],
-        "a1":          [1.5, 2.0],
-        "a3":          [1.0, 1.5],
+        "a0":          [-6.5, -6.0, -5.5],
+        "a1":          [1.5, 2.0, 2.5],
+        "a3":          [1.5, 2.5, 3.5],
         "lgd_ongoing": [0.057],
-        "edf_floor":   [0.003, 0.004, 0.005],
+        "edf_floor":   [0.003, 0.004],
         "lgd_floor":   [0.10, 0.15],
         "mat_ltv_trigger": [1.05],
-        "mat_cure":    [0.0, 0.20, 0.40],
+        "mat_cure":    [0.20, 0.40],
     }
     results = []
     for combo in itertools.product(*grid.values()):
