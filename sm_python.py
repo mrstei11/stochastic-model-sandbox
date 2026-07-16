@@ -347,19 +347,22 @@ def irr_batch(cf_matrix: np.ndarray) -> np.ndarray:
 #   (idiosyncratic risk the covariates can't see).
 # lgd_floor: minimum severity given default — workouts always incur costs,
 #   even when collateral fully covers the loan.
-# mat_ltv_trigger: maturity default test — at the balloon, the loan defaults
-#   iff mark-to-market LTV exceeds this trigger (borrower can't refinance or
-#   sell to cover, and won't bridge negative equity). 1.05 means default at
-#   LTV > 105%; mildly underwater loans (100-105%) are assumed to extend/cure.
-# mat_cure: share of triggered maturity defaults that still resolve with no
-#   principal loss (extension while values recover; KBRA SASB shows most
+# mat_ltv_lo / mat_ltv_trigger: maturity default at the balloon is a
+#   value-based refinancing-gap ramp. Below mat_ltv_lo the balloon
+#   refinances comfortably (P=0); above mat_ltv_trigger the borrower is
+#   underwater beyond any bridge and always defaults (P=1). Between the two,
+#   default probability rises linearly: the loan has positive paper equity
+#   but can't be taken out at par (max refi proceeds ~70-75% LTV), which is
+#   historically the dominant CMBS default channel.
+# mat_cure: share of maturity defaults that still resolve with no principal
+#   loss (extension while values recover; KBRA SASB shows many
 #   moderate-leverage defaults resolve lossless — blended severity 11% vs
 #   40% conditional on a meaningful loss).
 CREDIT_PARAMS = dict(
     a0=EDF_A0, a1=EDF_A1, a2=EDF_A2, a3=EDF_A3,
     lgd_ongoing=LGD_ONGOING_PER_YR, lgd_onetime=LGD_ONETIME,
     edf_floor=0.004, lgd_floor=0.15,
-    mat_ltv_trigger=1.05, mat_cure=0.20,
+    mat_ltv_lo=0.85, mat_ltv_trigger=1.05, mat_cure=0.30,
 )
 
 
@@ -373,10 +376,11 @@ def run_credit_model(dscr_all: np.ndarray, mv_all: np.ndarray,
 
     Separated from the path simulation so calibration sweeps can re-price
     default risk under new parameters without re-running the Monte Carlo.
-    dscr_all/mv_all are (n_sim, 10); u_def is (n_sim, 11) — ten hazard draws
-    plus one maturity-cure draw. Returns (is_default, loss_sev); cured
-    maturity defaults count as defaults with zero loss (KBRA convention,
-    so reported PD is default incidence and Avg_LGD is blended severity).
+    dscr_all/mv_all are (n_sim, 10); u_def is (n_sim, 12) — ten hazard draws,
+    one maturity-ramp draw, one maturity-cure draw. Returns
+    (is_default, loss_sev); cured maturity defaults count as defaults with
+    zero loss (KBRA convention, so reported PD is default incidence and
+    Avg_LGD is blended severity).
     """
     p = {**CREDIT_PARAMS, **(params or {})}
 
@@ -396,18 +400,21 @@ def run_credit_model(dscr_all: np.ndarray, mv_all: np.ndarray,
     def_yr_idx  = np.where(has_default,
                             yr_defaults.argmax(axis=1), 0)             # (n_sim,)
 
-    # ---- Leg 2: maturity default at the balloon ----
-    # Deterministic value test: if mark-to-market LTV at exit exceeds the
-    # trigger, the borrower cannot refinance or sell to retire the balloon
-    # and won't bridge negative equity — the loan defaults at maturity.
-    # Unlike the term years (where an underwater borrower can keep paying),
-    # repayment at maturity is not optional.
-    exit_ltv    = ltv_t[:, 9]
-    mat_default = (~has_default) & (exit_ltv > p["mat_ltv_trigger"])
+    # ---- Leg 2: maturity default at the balloon (refinancing-gap ramp) ----
+    # Value-based: default probability is 0 below mat_ltv_lo, rises linearly
+    # through the refi-gap zone (positive paper equity but too little for a
+    # par take-out), and hits 1 at mat_ltv_trigger — beyond which the
+    # borrower is underwater past any bridge and repayment of the balloon,
+    # unlike interim debt service, is not optional.
+    exit_ltv = ltv_t[:, 9]
+    p_mat    = np.clip((exit_ltv - p["mat_ltv_lo"])
+                       / max(p["mat_ltv_trigger"] - p["mat_ltv_lo"], 1e-9),
+                       0.0, 1.0)
+    mat_default = (~has_default) & (u_def[:, 10] < p_mat)
 
     # A share of maturity defaults cure (extension / workout, values recover,
     # loan ultimately repays at par) — defaults with zero principal loss.
-    mat_cured   = mat_default & (u_def[:, 10] < p["mat_cure"])
+    mat_cured   = mat_default & (u_def[:, 11] < p["mat_cure"])
 
     has_default = has_default | mat_default
     def_yr_idx  = np.where(mat_default, 9, def_yr_idx)
@@ -611,7 +618,7 @@ def simulate_property_type(row: pd.Series, n_sim: int, seed: int = 42
     mv_all   = np.hstack([mv_mid, end_val.reshape(-1, 1)])             # (n_sim, 10)
 
     coupon = BASE_SOFR + spread
-    u_def  = rng.random((n_sim, 11))   # 10 hazard years + 1 maturity-cure draw
+    u_def  = rng.random((n_sim, 12))   # 10 hazard yrs + maturity ramp + cure draws
     is_default, loss_sev = run_credit_model(
         dscr_all, mv_all, loan_amt, value, coupon, row.proptype, u_def)
 

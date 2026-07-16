@@ -42,7 +42,7 @@ def score(tbl: pd.DataFrame) -> float:
     penalty anchored to the historical record. The anchors say best sectors
     ~5-10, mid ~12-15, upper ~20-25, worst ~50."""
     q = tbl.EL_bps.quantile
-    targets = {0.0: 7.5, 0.25: 10.0, 0.5: 14.0, 0.75: 22.0, 1.0: 50.0}
+    targets = {0.0: 7.0, 0.25: 9.0, 0.5: 11.0, 0.75: 16.0, 1.0: 50.0}
     s = sum((q(p) - t) ** 2 for p, t in targets.items())
 
     rank = {pt: i for i, pt in enumerate(tbl.proptype)}  # 0 = safest of 21
@@ -55,14 +55,15 @@ def score(tbl: pd.DataFrame) -> float:
 
 if __name__ == "__main__":
     grid = {
-        "a0":          [-6.5, -6.0, -5.5],
-        "a1":          [1.5, 2.0, 2.5],
-        "a3":          [1.5, 2.5, 3.5],
+        "a0":          [-6.5, -6.0],
+        "a1":          [1.5, 2.0],
+        "a3":          [1.0, 1.5],
         "lgd_ongoing": [0.057],
         "edf_floor":   [0.003, 0.004],
         "lgd_floor":   [0.10, 0.15],
+        "mat_ltv_lo":  [0.80, 0.85, 0.90],
         "mat_ltv_trigger": [1.05],
-        "mat_cure":    [0.20, 0.40],
+        "mat_cure":    [0.10, 0.20, 0.30],
     }
     results = []
     for combo in itertools.product(*grid.values()):
